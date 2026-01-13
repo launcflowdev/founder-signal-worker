@@ -3,7 +3,7 @@
  * Week 1: stubbed extraction surface (no Reddit auth yet)
  */
 
-type SignalType = "pain" | "workaround" | "request" | "unknown";
+type SignalType = "pain" | "workaround" | "request" | "launch" | "unknown";
 
 type ExtractRequest = {
   subreddits: string[];
@@ -46,6 +46,10 @@ function normalizeLimit(limit: unknown): number {
 
 function classifySignal(text: string): SignalType {
   const t = text.toLowerCase();
+  // HN-specific prefixes take priority
+  if (t.startsWith("show hn")) return "launch";
+  if (t.startsWith("ask hn")) return "request";
+  // Keyword-based detection
   if (/(pain|stuck|frustrat|hate|broken|can't|cannot|problem|issue)/.test(t)) return "pain";
   if (/(workaround|hack|duct tape|script|automate|i built|we built|solution)/.test(t)) return "workaround";
   if (/(looking for|anyone know|recommend|need a tool|wish there was|does anyone)/.test(t)) return "request";
