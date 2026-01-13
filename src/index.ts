@@ -52,49 +52,69 @@ function classifySignal(text: string): SignalType {
   return "unknown";
 }
 
-function stubProvider(subreddits: string[], keywords: string[], limit: number): SignalItem[] {
-  const now = Math.floor(Date.now() / 1000);
-  const seed = `${subreddits.join(",")} | ${keywords.join(",")}`;
+type HNItem = {
+  id: number;
+  title?: string;
+  url?: string;
+  score?: number;
+  time?: number;
+  descendants?: number;
+  type?: string;
+};
 
-  const base: Omit<SignalItem, "signal_type">[] = [
-    {
-      title: `I'm drowning in customer support — need a lightweight triage workflow (${seed})`,
-      url: "https://example.com/reddit/mock/1",
-      subreddit: subreddits[0] ?? "startups",
-      score: 137,
-      created_utc: now - 60 * 60 * 6,
-      excerpt:
-        "We're a 2-person SaaS and support is consuming the roadmap. I need a simple way to tag and prioritize without building a full system.",
-    },
-    {
-      title: `Workaround: I pipe feedback into a spreadsheet + weekly clustering (${seed})`,
-      url: "https://example.com/reddit/mock/2",
-      subreddit: subreddits[1] ?? subreddits[0] ?? "Entrepreneur",
-      score: 88,
-      created_utc: now - 60 * 60 * 18,
-      excerpt:
-        "I copy/paste notable complaints into a sheet, then every Friday I group them into themes. It's ugly but it keeps me shipping.",
-    },
-    {
-      title: `Request: tool that summarizes founder pain points by niche (${seed})`,
-      url: "https://example.com/reddit/mock/3",
-      subreddit: subreddits[2] ?? subreddits[0] ?? "SaaS",
-      score: 54,
-      created_utc: now - 60 * 60 * 30,
-      excerpt:
-        "Is there anything that reads the forums so I don't have to? I want the top recurring problems and what people tried.",
-    },
-  ];
+type ProviderResult = {
+  items: SignalItem[];
+  error?: string;
+};
 
-  const items = base.map((x) => ({
-    ...x,
-    signal_type: classifySignal(`${x.title} ${x.excerpt}`),
-  }));
+async function hackerNewsProvider(keywords: string[], limit: number): Promise<ProviderResult> {
+  const HN_API = "https://hacker-news.firebaseio.com/v0";
 
-  // Repeat deterministically if limit > base size (stub behavior)
-  const out: SignalItem[] = [];
-  for (let i = 0; i < limit; i++) out.push(items[i % items.length]);
-  return out;
+  try {
+    // Fetch top story IDs
+    const topStoriesRes = await fetch(`${HN_API}/topstories.json`);
+    if (!topStoriesRes.ok) {
+      return { items: [], error: `Failed to fetch top stories: ${topStoriesRes.status}` };
+    }
+    const storyIds: number[] = await topStoriesRes.json();
+
+    // Fetch item details in parallel (limit to first 100 to avoid excessive requests)
+    const fetchLimit = Math.min(storyIds.length, 100);
+    const itemPromises = storyIds.slice(0, fetchLimit).map(async (id): Promise<HNItem | null> => {
+      try {
+        const res = await fetch(`${HN_API}/item/${id}.json`);
+        if (!res.ok) return null;
+        return await res.json();
+      } catch {
+        return null;
+      }
+    });
+
+    const items = await Promise.all(itemPromises);
+
+    // Filter by keywords (case-insensitive match in title)
+    const keywordsLower = keywords.map((k) => k.toLowerCase());
+    const filtered = items.filter((item): item is HNItem => {
+      if (!item || !item.title) return false;
+      const titleLower = item.title.toLowerCase();
+      return keywordsLower.some((kw) => titleLower.includes(kw));
+    });
+
+    // Map to SignalItem format and respect limit
+    const signalItems: SignalItem[] = filtered.slice(0, limit).map((item) => ({
+      title: item.title!,
+      url: item.url || `https://news.ycombinator.com/item?id=${item.id}`,
+      subreddit: "hackernews",
+      score: item.score ?? 0,
+      created_utc: item.time ?? 0,
+      excerpt: `${item.descendants ?? 0} comments`,
+      signal_type: classifySignal(item.title!),
+    }));
+
+    return { items: signalItems };
+  } catch (e) {
+    return { items: [], error: `HN API error: ${(e as Error).message}` };
+  }
 }
 
 async function readJson<T>(request: Request): Promise<T> {
@@ -137,9 +157,14 @@ export default {
       if (keywords.length === 0) return badRequest("keywords must contain at least one non-empty string");
 
       const limit = normalizeLimit(body.limit);
-      const items = stubProvider(subreddits, keywords, limit);
+      const result = await hackerNewsProvider(keywords, limit);
 
-      return json({ items, meta: { subreddits, keywords, limit, provider: "stub" } });
+      const meta: Record<string, unknown> = { subreddits, keywords, limit, provider: "hackernews" };
+      if (result.error) {
+        meta.error = result.error;
+      }
+
+      return json({ items: result.items, meta });
     }
 
     return json(
@@ -147,7 +172,7 @@ export default {
         error: "Not Found",
         routes: {
           "GET /health": "liveness check",
-          "POST /extract": "stubbed extraction (no Reddit auth yet)",
+          "POST /extract": "extract signals from Hacker News",
         },
       },
       404
