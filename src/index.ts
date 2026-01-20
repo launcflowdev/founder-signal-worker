@@ -64,12 +64,70 @@ type HNItem = {
   time?: number;
   descendants?: number;
   type?: string;
+  kids?: number[];
 };
+
+type HNComment = {
+  id: number;
+  text?: string;
+  deleted?: boolean;
+  dead?: boolean;
+};
+
+function stripHtmlTags(html: string): string {
+  return html
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#x27;/g, "'")
+    .replace(/&nbsp;/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
 
 type ProviderResult = {
   items: SignalItem[];
   error?: string;
 };
+
+async function fetchTopComments(
+  hnApi: string,
+  kids: number[] | undefined,
+  maxComments = 3
+): Promise<string> {
+  if (!kids || kids.length === 0) {
+    return "";
+  }
+
+  const commentIds = kids.slice(0, maxComments);
+  const commentPromises = commentIds.map(async (id): Promise<string | null> => {
+    try {
+      const res = await fetch(`${hnApi}/item/${id}.json`);
+      if (!res.ok) return null;
+      const comment: HNComment = await res.json();
+      // Handle deleted/dead/missing comments
+      if (!comment || comment.deleted || comment.dead || !comment.text) {
+        return null;
+      }
+      return stripHtmlTags(comment.text);
+    } catch {
+      return null;
+    }
+  });
+
+  const comments = await Promise.all(commentPromises);
+  const validComments = comments.filter((c): c is string => c !== null && c.length > 0);
+
+  if (validComments.length === 0) {
+    return "";
+  }
+
+  // Join comments and limit to 200 chars
+  const joined = validComments.join(" | ");
+  return joined.length > 200 ? joined.slice(0, 197) + "..." : joined;
+}
 
 async function hackerNewsProvider(keywords: string[], limit: number): Promise<ProviderResult> {
   const HN_API = "https://hacker-news.firebaseio.com/v0";
@@ -105,15 +163,31 @@ async function hackerNewsProvider(keywords: string[], limit: number): Promise<Pr
     });
 
     // Map to SignalItem format and respect limit
-    const signalItems: SignalItem[] = filtered.slice(0, limit).map((item) => ({
-      title: item.title!,
-      url: item.url || `https://news.ycombinator.com/item?id=${item.id}`,
-      subreddit: "hackernews",
-      score: item.score ?? 0,
-      created_utc: item.time ?? 0,
-      excerpt: `${item.descendants ?? 0} comments`,
-      signal_type: classifySignal(item.title!),
-    }));
+    // Fetch comments in parallel for all filtered items
+    const limitedItems = filtered.slice(0, limit);
+    const signalItemPromises = limitedItems.map(async (item): Promise<SignalItem> => {
+      let excerpt = `${item.descendants ?? 0} comments`;
+
+      // Fetch top comments if available
+      if (item.descendants && item.descendants > 0 && item.kids && item.kids.length > 0) {
+        const commentsExcerpt = await fetchTopComments(HN_API, item.kids, 3);
+        if (commentsExcerpt) {
+          excerpt = commentsExcerpt;
+        }
+      }
+
+      return {
+        title: item.title!,
+        url: item.url || `https://news.ycombinator.com/item?id=${item.id}`,
+        subreddit: "hackernews",
+        score: item.score ?? 0,
+        created_utc: item.time ?? 0,
+        excerpt,
+        signal_type: classifySignal(item.title!),
+      };
+    });
+
+    const signalItems = await Promise.all(signalItemPromises);
 
     return { items: signalItems };
   } catch (e) {
