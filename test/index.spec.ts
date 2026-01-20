@@ -23,6 +23,15 @@ describe('founder-signal-worker', () => {
 		expect(body.ok).toBe(true);
 	});
 
+	it('GET / returns HTML UI', async () => {
+		const response = await SELF.fetch('https://example.com/');
+		expect(response.status).toBe(200);
+		expect(response.headers.get('content-type')).toBe('text/html; charset=utf-8');
+		const body = await response.text();
+		expect(body).toContain('<title>Founder Signal</title>');
+		expect(body).toContain('Extract & Analyze');
+	});
+
 	it('returns 404 for unknown routes', async () => {
 		const response = await SELF.fetch('https://example.com/unknown');
 		expect(response.status).toBe(404);
