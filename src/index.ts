@@ -237,39 +237,35 @@ export default {
         return json({ error: "CLAUDE_API_KEY not configured" }, 500);
       }
 
-      const systemPrompt = `You are a Founder Signal Analyst. Transform HN posts into actionable founder intelligence. Speak founder language (problems, not features). Filter for actionable insights.`;
+      const systemPrompt = `You are a startup validation consultant. Transform HN signals into consultant-grade opportunity briefs worth $5K each. Be specific about market size, competition, and risks. No fluff - decisions only.`;
 
-      const userPrompt = `Analyze these signal items from Hacker News and provide founder intelligence:
+      const userPrompt = `Analyze these signal items from Hacker News and produce exactly 3 startup opportunities, ranked by confidence:
 
 ${JSON.stringify(body.items, null, 2)}
 
-Identify:
-- Top 3 patterns/problems identified
-- Common workarounds being used
-- Opportunities worth pursuing
-
-For each pattern, provide:
-- problem: Clear problem statement
-- context: Background and evidence
-- actionable_insight: What a founder should do
-- confidence: 0.0-1.0 score
-- evidence: Array of source titles that support this
-
-Also provide an executive_summary (2-3 sentences) of the overall findings.
-
 Respond with valid JSON only, in this exact format:
 {
-  "patterns": [
+  "executive_summary": "One paragraph: top 3 opportunities and why they matter now",
+  "opportunities": [
     {
-      "problem": "string",
-      "context": "string",
-      "actionable_insight": "string",
-      "confidence": 0.0-1.0,
-      "evidence": ["source titles"]
+      "rank": 1,
+      "problem": "Clear one-liner problem statement",
+      "market_size": "Specific estimate with reasoning",
+      "competition": "Who else is solving this, gaps in their approach",
+      "recommended_action": "Exact first step to validate this week",
+      "evidence": ["Direct quote 1", "Direct quote 2", "Direct quote 3"],
+      "risk_factors": "What could kill this opportunity",
+      "confidence": 0.0-1.0
     }
-  ],
-  "executive_summary": "string"
-}`;
+  ]
+}
+
+Requirements:
+- Return exactly 3 opportunities
+- Rank them by confidence (highest first)
+- Evidence must be direct quotes from the input items
+- Be specific about market size numbers and competition names
+- Recommended action must be actionable this week`;
 
       try {
         const claudeRes = await fetch("https://api.anthropic.com/v1/messages", {
@@ -305,7 +301,7 @@ Respond with valid JSON only, in this exact format:
         }
 
         // Parse Claude's JSON response (strip markdown fences if present)
-        let parsed: { patterns: unknown[]; executive_summary: string };
+        let parsed: { opportunities: unknown[]; executive_summary: string };
         try {
           let jsonText = textBlock.text.trim();
           // Remove leading markdown code fence (```json or ```)
@@ -332,7 +328,7 @@ Respond with valid JSON only, in this exact format:
           synthesis: {
             generated_at: new Date().toISOString(),
             item_count: body.items.length,
-            patterns: parsed.patterns,
+            opportunities: parsed.opportunities,
             executive_summary: parsed.executive_summary,
           },
         });
