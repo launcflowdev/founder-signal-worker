@@ -142,6 +142,131 @@ export default {
       return json({ ok: true, name: "founder-signal-worker", ts: Date.now() });
     }
 
+    // POST /synthesize
+    if (request.method === "POST" && path === "/synthesize") {
+      let body: { items: SignalItem[] };
+      try {
+        body = await readJson<{ items: SignalItem[] }>(request);
+      } catch (e) {
+        return badRequest((e as Error).message);
+      }
+
+      if (!body || !Array.isArray(body.items)) {
+        return badRequest("Invalid body. Expected { items: SignalItem[] }");
+      }
+
+      if (body.items.length === 0) {
+        return badRequest("items array must not be empty");
+      }
+
+      if (!env.CLAUDE_API_KEY) {
+        return json({ error: "CLAUDE_API_KEY not configured" }, 500);
+      }
+
+      const systemPrompt = `You are a Founder Signal Analyst. Transform HN posts into actionable founder intelligence. Speak founder language (problems, not features). Filter for actionable insights.`;
+
+      const userPrompt = `Analyze these signal items from Hacker News and provide founder intelligence:
+
+${JSON.stringify(body.items, null, 2)}
+
+Identify:
+- Top 3 patterns/problems identified
+- Common workarounds being used
+- Opportunities worth pursuing
+
+For each pattern, provide:
+- problem: Clear problem statement
+- context: Background and evidence
+- actionable_insight: What a founder should do
+- confidence: 0.0-1.0 score
+- evidence: Array of source titles that support this
+
+Also provide an executive_summary (2-3 sentences) of the overall findings.
+
+Respond with valid JSON only, in this exact format:
+{
+  "patterns": [
+    {
+      "problem": "string",
+      "context": "string",
+      "actionable_insight": "string",
+      "confidence": 0.0-1.0,
+      "evidence": ["source titles"]
+    }
+  ],
+  "executive_summary": "string"
+}`;
+
+      try {
+        const claudeRes = await fetch("https://api.anthropic.com/v1/messages", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-api-key": env.CLAUDE_API_KEY,
+            "anthropic-version": "2023-06-01",
+          },
+          body: JSON.stringify({
+            model: "claude-sonnet-4-20250514",
+            max_tokens: 2048,
+            system: systemPrompt,
+            messages: [{ role: "user", content: userPrompt }],
+          }),
+        });
+
+        if (!claudeRes.ok) {
+          const errText = await claudeRes.text();
+          return json(
+            { error: "Claude API error", status: claudeRes.status, details: errText },
+            502
+          );
+        }
+
+        const claudeData = (await claudeRes.json()) as {
+          content: Array<{ type: string; text?: string }>;
+        };
+
+        const textBlock = claudeData.content.find((b) => b.type === "text");
+        if (!textBlock || !textBlock.text) {
+          return json({ error: "No text response from Claude" }, 502);
+        }
+
+        // Parse Claude's JSON response (strip markdown fences if present)
+        let parsed: { patterns: unknown[]; executive_summary: string };
+        try {
+          let jsonText = textBlock.text.trim();
+          // Remove leading markdown code fence (```json or ```)
+          if (jsonText.startsWith("```")) {
+            const firstNewline = jsonText.indexOf("\n");
+            if (firstNewline !== -1) {
+              jsonText = jsonText.slice(firstNewline + 1);
+            }
+          }
+          // Remove trailing markdown code fence
+          if (jsonText.endsWith("```")) {
+            jsonText = jsonText.slice(0, -3);
+          }
+          jsonText = jsonText.trim();
+          parsed = JSON.parse(jsonText);
+        } catch {
+          return json(
+            { error: "Failed to parse Claude response as JSON", raw: textBlock.text },
+            502
+          );
+        }
+
+        return json({
+          synthesis: {
+            generated_at: new Date().toISOString(),
+            item_count: body.items.length,
+            patterns: parsed.patterns,
+            executive_summary: parsed.executive_summary,
+          },
+        });
+      } catch (e) {
+        return json({ error: "Claude API request failed", details: (e as Error).message }, 502);
+      }
+    }
+
     // POST /extract
     if (request.method === "POST" && path === "/extract") {
       let body: ExtractRequest;
@@ -177,6 +302,7 @@ export default {
         routes: {
           "GET /health": "liveness check",
           "POST /extract": "extract signals from Hacker News",
+          "POST /synthesize": "synthesize patterns from extracted signals",
         },
       },
       404
